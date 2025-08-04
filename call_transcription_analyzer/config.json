@@ -1,0 +1,45 @@
+{
+  "database": {
+    "server": "localhost",
+    "database": "CallAnalysis",
+    "username": "your_username",
+    "password": "your_password",
+    "driver": "ODBC Driver 17 for SQL Server",
+    "trusted_connection": false
+  },
+  "whisper": {
+    "model_size": "base",
+    "language": "es",
+    "device": "cpu",
+    "compute_type": "int8"
+  },
+  "analysis": {
+    "keywords": [
+      "gracias",
+      "muchas gracias",
+      "de nada",
+      "por favor",
+      "disculpe",
+      "perdón",
+      "buenos días",
+      "buenas tardes",
+      "buenas noches",
+      "con permiso",
+      "si me permite",
+      "lo siento",
+      "mil disculpas",
+      "que tenga buen día",
+      "que esté bien",
+      "hasta luego",
+      "nos vemos"
+    ],
+    "speaker_separation_enabled": true,
+    "confidence_threshold": 0.7
+  },
+  "processing": {
+    "input_directory": "./input",
+    "completed_directory": "./completed",
+    "move_completed": true,
+    "max_file_size_mb": 100
+  }
+}
