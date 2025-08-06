@@ -2,8 +2,8 @@
   "database": {
     "server": "localhost",
     "database": "CallAnalysis",
-    "username": "your_username",
-    "password": "your_password",
+    "username": "",
+    "password": "",
     "driver": "ODBC Driver 17 for SQL Server",
     "trusted_connection": false
   },

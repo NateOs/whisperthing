@@ -2,7 +2,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from src.config import Config
+from src.config import load_config
 from src.database import DatabaseManager
 from src.transcription import TranscriptionService
 from src.analysis import CallAnalyzer
@@ -13,7 +13,6 @@ def main():
     parser = argparse.ArgumentParser(description='Call Transcription and Analysis Tool')
     parser.add_argument('--audio-file', type=str, help='Path to the audio file to process')
     parser.add_argument('--audio-folder', type=str, help='Path to folder containing audio files')
-    parser.add_argument('--config', type=str, default='config.json', help='Path to config file')
     parser.add_argument('--log-level', type=str, default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
     
     args = parser.parse_args()
@@ -23,8 +22,8 @@ def main():
     logger = logging.getLogger(__name__)
     
     try:
-        # Load configuration
-        config = Config(args.config)
+        # Load configuration from environment
+        config = load_config()
         
         # Initialize services
         db_manager = DatabaseManager(config.database)
