@@ -1,87 +1,76 @@
-import argparse
+import os
+import json
 import logging
-import sys
 from pathlib import Path
-from src.config import load_config
-from src.database import DatabaseManager
-from src.transcription import TranscriptionService
-from src.analysis import CallAnalyzer
-from src.utils import setup_logging
+from dotenv import load_dotenv
+from src.simple_transcriber import SimpleTranscriber
+
+def setup_logging():
+    """Setup basic logging."""
+    log_level = os.getenv("LOG_LEVEL", "INFO")
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper()),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 
 def main():
-    """Main entry point for the call transcription analyzer."""
-    parser = argparse.ArgumentParser(description='Call Transcription and Analysis Tool')
-    parser.add_argument('--audio-file', type=str, help='Path to the audio file to process')
-    parser.add_argument('--audio-folder', type=str, help='Path to folder containing audio files')
-    parser.add_argument('--log-level', type=str, default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
-    
-    args = parser.parse_args()
+    # Load environment variables
+    load_dotenv()
     
     # Setup logging
-    setup_logging(args.log_level)
+    setup_logging()
     logger = logging.getLogger(__name__)
     
     try:
-        # Load configuration from environment
-        config = load_config()
+        # Initialize transcriber
+        transcriber = SimpleTranscriber()
         
-        # Initialize services
-        db_manager = DatabaseManager(config.database)
-        transcription_service = TranscriptionService(config.whisper)
-        analyzer = CallAnalyzer(config.analysis)
+        # Get directories from environment
+        input_dir = Path(os.getenv("INPUT_DIRECTORY", "./input"))
+        output_dir = Path(os.getenv("OUTPUT_DIRECTORY", "./output"))
         
-        # Process audio files
+        # Create directories if they don't exist
+        input_dir.mkdir(exist_ok=True)
+        output_dir.mkdir(exist_ok=True)
+        
+        # Find audio files
+        audio_extensions = ["*.wav", "*.mp3", "*.m4a", "*.flac"]
         audio_files = []
-        if args.audio_file:
-            audio_files = [Path(args.audio_file)]
-        elif args.audio_folder:
-            audio_folder = Path(args.audio_folder)
-            audio_files = list(audio_folder.glob("*.wav"))
-        else:
-            # Default: process all files in configured input directory
-            input_dir = Path(config.processing.input_directory)
-            audio_files = list(input_dir.glob("*.wav"))
+        for ext in audio_extensions:
+            audio_files.extend(input_dir.glob(ext))
         
         if not audio_files:
-            logger.warning("No audio files found to process")
+            logger.info(f"No audio files found in {input_dir}")
+            logger.info(f"Supported formats: {', '.join(audio_extensions)}")
             return
         
-        logger.info(f"Processing {len(audio_files)} audio files")
+        logger.info(f"Found {len(audio_files)} audio file(s) to process")
         
+        # Process each file
         for audio_file in audio_files:
             try:
-                logger.info(f"Processing: {audio_file}")
+                logger.info(f"Processing: {audio_file.name}")
                 
-                # Transcribe audio
-                transcription_result = transcription_service.transcribe_call(audio_file)
+                # Process the audio
+                result = transcriber.process_audio(str(audio_file))
                 
-                # Analyze transcription
-                analysis_result = analyzer.analyze_call(transcription_result)
+                # Print conversation to console
+                transcriber.print_conversation(result["merged_result"])
                 
-                # Save to database
-                call_id = db_manager.save_call_analysis(
-                    audio_file_path=str(audio_file),
-                    transcription=transcription_result,
-                    analysis=analysis_result
-                )
+                # Save detailed result to JSON
+                output_file = output_dir / f"{audio_file.stem}_analysis.json"
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    json.dump(result, f, indent=2, ensure_ascii=False)
                 
-                logger.info(f"Successfully processed call ID: {call_id}")
-                
-                # Move processed file to completed directory if configured
-                if config.processing.move_completed:
-                    completed_dir = Path(config.processing.completed_directory)
-                    completed_dir.mkdir(exist_ok=True)
-                    audio_file.rename(completed_dir / audio_file.name)
+                logger.info(f"Detailed analysis saved to: {output_file}")
                 
             except Exception as e:
-                logger.error(f"Error processing {audio_file}: {str(e)}")
-                continue
+                logger.error(f"Failed to process {audio_file}: {e}")
         
-        logger.info("Processing completed")
+        logger.info("Processing complete!")
         
     except Exception as e:
-        logger.error(f"Application error: {str(e)}")
-        sys.exit(1)
+        logger.error(f"Application error: {e}")
 
 if __name__ == "__main__":
     main()
