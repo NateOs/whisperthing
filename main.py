@@ -6,11 +6,14 @@ from dotenv import load_dotenv
 from src.simple_transcriber import SimpleTranscriber
 
 def setup_logging():
-    """Setup basic logging."""
-    log_level = os.getenv("LOG_LEVEL", "INFO")
+    """Setup logging configuration."""
     logging.basicConfig(
-        level=getattr(logging, log_level.upper()),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler('transcription.log')
+        ]
     )
 
 def main():
