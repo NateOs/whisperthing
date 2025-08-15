@@ -39,9 +39,9 @@ class AudioProcessor:
             num_chunks = math.ceil(file_size / self.max_size_bytes)
             chunk_duration_ms = total_duration_ms // num_chunks
             
-            # Add 10% overlap between chunks to avoid cutting words
-            overlap_ms = int(chunk_duration_ms * 0.1)
-            
+            max_overlap_ms = 3000
+            overlap_ms = min(max_overlap_ms, int(chunk_duration_ms * 0.05))  # 5% or 3 seconds, whichever is smaller
+        
             chunks = []
             base_name = input_path.stem
             
