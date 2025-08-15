@@ -3,7 +3,10 @@ import time
 import os
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
-from openai import OpenAI
+import openai
+from .audio_utils import preprocess_audio
+import tempfile
+import soundfile as sf
 from pyannote.audio import Pipeline
 from pydub import AudioSegment
 
@@ -12,7 +15,7 @@ class SimpleTranscriptionService:
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.client = openai.OpenAI()
         self.diarization_pipeline = None
         self._load_diarization_model()
     
@@ -62,20 +65,25 @@ class SimpleTranscriptionService:
     def _transcribe_with_openai(self, audio_file_path: Path) -> Dict[str, Any]:
         """Transcribe audio using OpenAI Whisper API."""
         try:
-            with open(audio_file_path, "rb") as audio_file:
-                transcript = self.client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    language="es",  # Spanish
-                    response_format="verbose_json",
-                    timestamp_granularities=["word"]
-                )
+            # Preprocess audio
+            audio_data, sr = preprocess_audio(audio_file_path)
             
-            return {
-                "text": transcript.text,
-                "words": transcript.words if hasattr(transcript, 'words') else [],
-                "segments": transcript.segments if hasattr(transcript, 'segments') else []
-            }
+            # Save preprocessed audio to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+                sf.write(temp_file.name, audio_data, sr)
+                
+                # Transcribe with better parameters
+                with open(temp_file.name, 'rb') as audio:
+                    response = self.client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio,
+                        language="es",  # Specify Spanish
+                        prompt="Esta es una llamada de servicio al cliente en español. Los participantes discuten sobre pedidos, direcciones y códigos postales.",  # Context prompt
+                        temperature=0.0,  # More deterministic
+                        response_format="verbose_json"
+                    )
+            
+            return self._process_response(response, audio_file_path)
             
         except Exception as e:
             self.logger.error(f"OpenAI transcription failed: {e}")
@@ -159,3 +167,45 @@ class SimpleTranscriptionService:
             })
         
         return combined
+    
+    def _process_response(self, response, audio_file):
+        """Process and clean the transcription response."""
+        # Filter out repetitive segments
+        segments = []
+        prev_text = ""
+        repetition_count = 0
+        
+        for segment in response.segments:
+            text = segment['text'].strip()
+            
+            # Skip empty or very short segments
+            if len(text) < 3:
+                continue
+                
+            # Check for repetitive content
+            if text == prev_text:
+                repetition_count += 1
+                if repetition_count > 2:  # Skip after 2 repetitions
+                    continue
+            else:
+                repetition_count = 0
+                
+            # Skip segments that are just "Mami" repeated
+            if text.lower().strip() in ['mami', 'mami.']:
+                continue
+                
+            segments.append({
+                'start': segment['start'],
+                'end': segment['end'],
+                'text': text,
+                'confidence': getattr(segment, 'confidence', 0.8)
+            })
+            
+            prev_text = text
+        
+        return {
+            'text': response.text,
+            'segments': segments,
+            'duration': getattr(response, 'duration', 0),
+            'language': 'es'
+        }

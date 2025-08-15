@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import List, Tuple
 from pydub import AudioSegment
 import math
+import librosa
+import numpy as np
+from scipy.signal import butter, filtfilt
 
 class AudioProcessor:
     """Utility class for audio file processing."""
@@ -95,3 +98,47 @@ class AudioProcessor:
             "chunks_processed": len(transcriptions),
             "language": transcriptions[0].get("language", "es") if transcriptions else "es"
         }
+
+def preprocess_audio(audio_path, target_sr=16000):
+    """Preprocess audio to improve transcription quality."""
+    # Load audio
+    audio, sr = librosa.load(audio_path, sr=target_sr)
+    
+    # Remove silence
+    audio_trimmed, _ = librosa.effects.trim(audio, top_db=20)
+    
+    # Apply noise reduction (simple high-pass filter)
+    def butter_highpass_filter(data, cutoff=300, fs=16000, order=5):
+        nyquist = 0.5 * fs
+        normal_cutoff = cutoff / nyquist
+        b, a = butter(order, normal_cutoff, btype='high', analog=False)
+        return filtfilt(b, a, data)
+    
+    audio_filtered = butter_highpass_filter(audio_trimmed)
+    
+    # Normalize audio
+    audio_normalized = librosa.util.normalize(audio_filtered)
+    
+    return audio_normalized, target_sr
+
+def validate_audio_quality(audio_path):
+    """Validate audio quality before transcription."""
+    audio, sr = librosa.load(audio_path)
+    
+    # Check for minimum duration
+    duration = len(audio) / sr
+    if duration < 1.0:
+        return False, "Audio too short"
+    
+    # Check for silence ratio
+    silence_threshold = 0.01
+    silence_ratio = np.sum(np.abs(audio) < silence_threshold) / len(audio)
+    if silence_ratio > 0.8:
+        return False, "Audio mostly silent"
+    
+    # Check for clipping
+    clipping_ratio = np.sum(np.abs(audio) > 0.95) / len(audio)
+    if clipping_ratio > 0.1:
+        return False, "Audio heavily clipped"
+    
+    return True, "Audio quality acceptable"

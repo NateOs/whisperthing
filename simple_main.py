@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from dotenv import load_dotenv
 from src.transcription import SimpleTranscriptionService
+from src.audio_utils import validate_audio_quality
 
 def setup_logging():
     """Setup basic logging."""
@@ -46,6 +47,12 @@ def main():
     # Process each file
     for audio_file in audio_files:
         try:
+            # Validate audio quality first
+            is_valid, message = validate_audio_quality(audio_file)
+            if not is_valid:
+                logger.warning(f"Skipping {audio_file}: {message}")
+                continue
+                
             logger.info(f"Processing: {audio_file}")
             result = service.transcribe_audio(audio_file)
             

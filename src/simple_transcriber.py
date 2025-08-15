@@ -110,7 +110,19 @@ class SimpleTranscriber:
                 "pyannote/speaker-diarization-3.1",
                 use_auth_token=hf_token
             )
-            self.logger.info("Speaker diarization pipeline loaded successfully")
+            
+            # Move pipeline to GPU if available
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    device = torch.device("cuda")
+                    self.pipeline.to(device)
+                    self.logger.info("Speaker diarization pipeline loaded successfully on GPU")
+                else:
+                    self.logger.info("Speaker diarization pipeline loaded successfully on CPU (GPU not available)")
+            except ImportError:
+                self.logger.info("Speaker diarization pipeline loaded successfully on CPU (PyTorch not available)")
+            
         except Exception as e:
             try:
                 # Fallback to older model
@@ -118,7 +130,16 @@ class SimpleTranscriber:
                     "pyannote/speaker-diarization",
                     use_auth_token=hf_token
                 )
-                self.logger.info("Fallback speaker diarization pipeline loaded")
+                # Also try to move fallback to GPU
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        self.pipeline.to(torch.device("cuda"))
+                        self.logger.info("Fallback speaker diarization pipeline loaded on GPU")
+                    else:
+                        self.logger.info("Fallback speaker diarization pipeline loaded on CPU")
+                except ImportError:
+                    self.logger.info("Fallback speaker diarization pipeline loaded on CPU")
             except Exception as e2:
                 self.logger.warning(f"Failed to load diarization pipeline: {e}")
                 self.logger.info("Please visit https://hf.co/pyannote/speaker-diarization-3.1 to accept user conditions")
@@ -229,15 +250,43 @@ class SimpleTranscriber:
             self.logger.error(f"OpenAI transcription failed: {e}")
             raise
     
-    def _run_diarization(self, audio_file_path: str) -> List[Dict[str, Any]]:
-        """Run speaker diarization on audio file."""
+    def _run_diarization(self, audio_file_path: str, num_speakers: int = None, min_speakers: int = None, max_speakers: int = None) -> List[Dict[str, Any]]:
+        """Run speaker diarization on audio file with speaker constraints."""
         if not self.pipeline:
             self.logger.warning("Diarization pipeline not available")
             return []
         
         try:
-            diarization = self.pipeline(audio_file_path)
+            # Prepare pipeline parameters
+            pipeline_params = {}
+            if num_speakers is not None:
+                pipeline_params["num_speakers"] = num_speakers
+            elif min_speakers is not None or max_speakers is not None:
+                if min_speakers is not None:
+                    pipeline_params["min_speakers"] = min_speakers
+                if max_speakers is not None:
+                    pipeline_params["max_speakers"] = max_speakers
             
+            # For call center scenarios, typically 2 speakers (agent + customer)
+            if not pipeline_params:
+                pipeline_params["num_speakers"] = 2
+            
+            # Pre-load audio and run diarization
+            try:
+                import torchaudio
+                waveform, sample_rate = torchaudio.load(audio_file_path)
+                if waveform.shape[0] > 1:
+                    waveform = waveform.mean(dim=0, keepdim=True)
+                if sample_rate != 16000:
+                    import torchaudio.transforms as T
+                    resampler = T.Resample(sample_rate, 16000)
+                    waveform = resampler(waveform)
+                
+                diarization = self.pipeline({"waveform": waveform, "sample_rate": 16000}, **pipeline_params)
+            except ImportError:
+                diarization = self.pipeline(audio_file_path, **pipeline_params)
+            
+            # Process results (same as before)
             speaker_segments = []
             speaker_times = {}
             
@@ -250,27 +299,97 @@ class SimpleTranscriber:
                 }
                 speaker_segments.append(segment)
                 
-                # Track total speaking time per speaker
                 if speaker not in speaker_times:
                     speaker_times[speaker] = 0
                 speaker_times[speaker] += segment["duration"]
             
-            # Assign roles based on speaking time (most talkative = agent)
+            # Assign roles
             if len(speaker_times) >= 2:
                 sorted_speakers = sorted(speaker_times.items(), key=lambda x: x[1], reverse=True)
                 speaker_mapping = {
                     sorted_speakers[0][0]: "agent",
                     sorted_speakers[1][0]: "customer"
                 }
-                
-                # Add additional speakers as "other" if present
                 for i, (speaker, _) in enumerate(sorted_speakers[2:], start=2):
                     speaker_mapping[speaker] = f"speaker_{i+1}"
             else:
-                # Single speaker
                 speaker_mapping = {list(speaker_times.keys())[0]: "agent"} if speaker_times else {}
             
-            # Add role to segments
+            for segment in speaker_segments:
+                segment["role"] = speaker_mapping.get(segment["speaker"], "unknown")
+            
+            self.logger.info(f"Diarization completed: {len(speaker_segments)} segments found")
+            return speaker_segments
+            
+        except Exception as e:
+            self.logger.error(f"Diarization failed: {e}")
+            return []
+    
+    def _run_diarization_with_progress(self, audio_file_path: str) -> List[Dict[str, Any]]:
+        """Run speaker diarization with progress monitoring."""
+        if not self.pipeline:
+            self.logger.warning("Diarization pipeline not available")
+            return []
+        
+        try:
+            # Import progress hook
+            try:
+                from pyannote.audio.pipelines.utils.hook import ProgressHook
+                
+                # Pre-load audio in memory for faster processing
+                try:
+                    import torchaudio
+                    waveform, sample_rate = torchaudio.load(audio_file_path)
+                    # Ensure mono audio at 16kHz
+                    if waveform.shape[0] > 1:
+                        waveform = waveform.mean(dim=0, keepdim=True)
+                    if sample_rate != 16000:
+                        import torchaudio.transforms as T
+                        resampler = T.Resample(sample_rate, 16000)
+                        waveform = resampler(waveform)
+                    
+                    # Run with progress monitoring
+                    with ProgressHook() as hook:
+                        diarization = self.pipeline({"waveform": waveform, "sample_rate": 16000}, hook=hook)
+                        
+                except ImportError:
+                    # Fallback without pre-loading
+                    with ProgressHook() as hook:
+                        diarization = self.pipeline(audio_file_path, hook=hook)
+                        
+            except ImportError:
+                # Fallback without progress monitoring
+                return self._run_diarization(audio_file_path)
+            
+            # Process results (same as before)
+            speaker_segments = []
+            speaker_times = {}
+            
+            for turn, _, speaker in diarization.itertracks(yield_label=True):
+                segment = {
+                    "start": turn.start,
+                    "end": turn.end,
+                    "speaker": speaker,
+                    "duration": turn.end - turn.start
+                }
+                speaker_segments.append(segment)
+                
+                if speaker not in speaker_times:
+                    speaker_times[speaker] = 0
+                speaker_times[speaker] += segment["duration"]
+            
+            # Assign roles based on speaking time
+            if len(speaker_times) >= 2:
+                sorted_speakers = sorted(speaker_times.items(), key=lambda x: x[1], reverse=True)
+                speaker_mapping = {
+                    sorted_speakers[0][0]: "agent",
+                    sorted_speakers[1][0]: "customer"
+                }
+                for i, (speaker, _) in enumerate(sorted_speakers[2:], start=2):
+                    speaker_mapping[speaker] = f"speaker_{i+1}"
+            else:
+                speaker_mapping = {list(speaker_times.keys())[0]: "agent"} if speaker_times else {}
+            
             for segment in speaker_segments:
                 segment["role"] = speaker_mapping.get(segment["speaker"], "unknown")
             
@@ -309,7 +428,7 @@ class SimpleTranscriber:
         
         return assigned_segments
     
-    def process_audio(self, audio_file_path: str) -> Dict[str, Any]:
+    def process_audio(self, audio_file_path: str, num_speakers: int = 2) -> Dict[str, Any]:
         """Process audio file with diarization and transcription."""
         audio_path = Path(audio_file_path)
         if not audio_path.exists():
@@ -328,7 +447,6 @@ class SimpleTranscriber:
                 try:
                     chunks = self._split_audio_file(audio_path)
                 except ImportError:
-                    # If we can't split, try to process anyway (will likely fail at OpenAI API)
                     self.logger.warning("Cannot split large file, attempting to process anyway...")
                     chunks = [audio_path]
             else:
@@ -346,9 +464,9 @@ class SimpleTranscriber:
             self._update_file_status(file_path_str, TranscriptionStatus.MERGING)
             merged_transcript = self._merge_transcriptions(transcriptions, chunks)
             
-            # Step 4: Run diarization on original file
+            # Step 4: Run optimized diarization on original file
             self._update_file_status(file_path_str, TranscriptionStatus.DIARIZING)
-            speaker_segments = self._run_diarization(str(audio_path))
+            speaker_segments = self._run_diarization(str(audio_path), num_speakers=num_speakers)
             
             # Step 5: Merge based on timestamps
             merged_result = self._merge_transcription_and_speakers(merged_transcript, speaker_segments)
