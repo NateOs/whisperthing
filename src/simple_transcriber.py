@@ -1,13 +1,15 @@
 import os
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 import warnings
 from dotenv import load_dotenv
 from openai import OpenAI
 import json
 import math
 import sys
+import shutil
+from enum import Enum
 
 # Suppress deprecation warnings from audio libraries
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
@@ -48,6 +50,16 @@ except ImportError as e:
     AudioSegment = None
     logging.warning(f"Audio processing unavailable: {e}")
 
+class TranscriptionStatus(Enum):
+    """Enumeration for transcription process status."""
+    PENDING = "pending"
+    SPLITTING = "splitting"
+    TRANSCRIBING = "transcribing"
+    DIARIZING = "diarizing"
+    MERGING = "merging"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
 class SimpleTranscriber:
     """Enhanced transcription service with file splitting and better speaker detection."""
     
@@ -58,6 +70,11 @@ class SimpleTranscriber:
         # File size limits (OpenAI Whisper API limit is 25MB)
         self.max_size_mb = 25.0
         self.max_size_bytes = self.max_size_mb * 1024 * 1024
+        
+        # Process tracking
+        self.chunks_directories: Set[Path] = set()
+        self.file_statuses: Dict[str, TranscriptionStatus] = {}
+        self.processing_errors: Dict[str, str] = {}
         
         # Initialize OpenAI client
         api_key = os.getenv("OPENAI_API_KEY")
@@ -136,6 +153,9 @@ class SimpleTranscriber:
         output_dir = input_path.parent / "chunks"
         output_dir.mkdir(exist_ok=True)
         
+        # Track this chunks directory
+        self.chunks_directories.add(output_dir)
+        
         try:
             # Load audio file
             audio = AudioSegment.from_wav(str(input_path))
@@ -143,6 +163,10 @@ class SimpleTranscriber:
             # Calculate file size and determine if splitting is needed
             file_size = input_path.stat().st_size
             if file_size <= self.max_size_bytes:
+                # File doesn't need splitting, clean up empty chunks dir
+                if output_dir.exists() and not any(output_dir.iterdir()):
+                    output_dir.rmdir()
+                    self.chunks_directories.discard(output_dir)
                 return [input_path]
             
             # Calculate chunk duration based on file size
@@ -172,6 +196,8 @@ class SimpleTranscriber:
             
         except Exception as e:
             self.logger.error(f"Failed to split audio file {input_path}: {e}")
+            # Remove from tracking if splitting failed
+            self.chunks_directories.discard(output_dir)
             raise
     
     def _run_transcription(self, audio_file_path: str) -> Dict[str, Any]:
@@ -289,42 +315,63 @@ class SimpleTranscriber:
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_file_path}")
         
-        self.logger.info(f"Processing audio file: {audio_path}")
+        file_path_str = str(audio_path)
+        self._update_file_status(file_path_str, TranscriptionStatus.PENDING)
         
-        # Check file size and split if necessary
-        if not self._check_file_size(audio_path):
-            self.logger.info(f"File size exceeds limit ({self.max_size_mb}MB), attempting to split {audio_path}")
-            try:
-                chunks = self._split_audio_file(audio_path)
-            except ImportError:
-                # If we can't split, try to process anyway (will likely fail at OpenAI API)
-                self.logger.warning("Cannot split large file, attempting to process anyway...")
+        try:
+            self.logger.info(f"Processing audio file: {audio_path}")
+            
+            # Step 1: Check file size and split if necessary
+            self._update_file_status(file_path_str, TranscriptionStatus.SPLITTING)
+            if not self._check_file_size(audio_path):
+                self.logger.info(f"File size exceeds limit ({self.max_size_mb}MB), attempting to split {audio_path}")
+                try:
+                    chunks = self._split_audio_file(audio_path)
+                except ImportError:
+                    # If we can't split, try to process anyway (will likely fail at OpenAI API)
+                    self.logger.warning("Cannot split large file, attempting to process anyway...")
+                    chunks = [audio_path]
+            else:
                 chunks = [audio_path]
-        else:
-            chunks = [audio_path]
-        
-        # Step 1: Run transcription on each chunk
-        transcriptions = []
-        for chunk in chunks:
-            self.logger.info(f"Transcribing chunk: {chunk}")
-            transcript = self._run_transcription(str(chunk))
-            transcriptions.append(transcript)
-        
-        # Step 2: Merge transcriptions
-        merged_transcript = self._merge_transcriptions(transcriptions, chunks)
-        
-        # Step 3: Run diarization on original file
-        speaker_segments = self._run_diarization(str(audio_path))
-        
-        # Step 4: Merge based on timestamps
-        merged_result = self._merge_transcription_and_speakers(merged_transcript, speaker_segments)
-        
-        return {
-            "file_path": str(audio_path),
-            "speaker_segments": speaker_segments,
-            "transcript": merged_transcript,
-            "merged_result": merged_result
-        }
+            
+            # Step 2: Run transcription on each chunk
+            self._update_file_status(file_path_str, TranscriptionStatus.TRANSCRIBING)
+            transcriptions = []
+            for i, chunk in enumerate(chunks, 1):
+                self.logger.info(f"Transcribing chunk {i}/{len(chunks)}: {chunk}")
+                transcript = self._run_transcription(str(chunk))
+                transcriptions.append(transcript)
+            
+            # Step 3: Merge transcriptions
+            self._update_file_status(file_path_str, TranscriptionStatus.MERGING)
+            merged_transcript = self._merge_transcriptions(transcriptions, chunks)
+            
+            # Step 4: Run diarization on original file
+            self._update_file_status(file_path_str, TranscriptionStatus.DIARIZING)
+            speaker_segments = self._run_diarization(str(audio_path))
+            
+            # Step 5: Merge based on timestamps
+            merged_result = self._merge_transcription_and_speakers(merged_transcript, speaker_segments)
+            
+            # Mark as completed
+            self._update_file_status(file_path_str, TranscriptionStatus.COMPLETED)
+            
+            result = {
+                "file_path": str(audio_path),
+                "speaker_segments": speaker_segments,
+                "transcript": merged_transcript,
+                "merged_result": merged_result,
+                "status": TranscriptionStatus.COMPLETED.value,
+                "chunks_used": len(chunks) > 1
+            }
+            
+            return result
+            
+        except Exception as e:
+            error_msg = str(e)
+            self._update_file_status(file_path_str, TranscriptionStatus.FAILED, error_msg)
+            self.logger.error(f"Failed to process {audio_path}: {error_msg}")
+            raise
     
     def _merge_transcriptions(self, transcriptions: List[dict], chunk_paths: List[Path]) -> dict:
         """Merge transcriptions from multiple chunks."""
@@ -420,3 +467,87 @@ class SimpleTranscriber:
             print(f"{timestamp} {role}: {text}")
         
         print("="*50 + "\n")
+    
+    def _cleanup_chunks(self, chunks_dir: Path):
+        """Clean up the chunks directory after processing."""
+        if chunks_dir and chunks_dir.exists() and chunks_dir.name == "chunks":
+            try:
+                shutil.rmtree(chunks_dir)
+                self.logger.info(f"Cleaned up chunks directory: {chunks_dir}")
+            except Exception as e:
+                self.logger.warning(f"Failed to clean up chunks directory {chunks_dir}: {e}")
+    
+    def _update_file_status(self, file_path: str, status: TranscriptionStatus, error: str = None):
+        """Update the status of a file being processed."""
+        self.file_statuses[file_path] = status
+        if error:
+            self.processing_errors[file_path] = error
+        self.logger.info(f"File {Path(file_path).name}: {status.value}")
+    
+    def get_processing_summary(self) -> Dict[str, Any]:
+        """Get a summary of the processing status."""
+        status_counts = {}
+        for status in TranscriptionStatus:
+            status_counts[status.value] = sum(1 for s in self.file_statuses.values() if s == status)
+        
+        return {
+            "total_files": len(self.file_statuses),
+            "status_counts": status_counts,
+            "chunks_directories": [str(d) for d in self.chunks_directories],
+            "errors": self.processing_errors.copy(),
+            "all_completed": all(status == TranscriptionStatus.COMPLETED for status in self.file_statuses.values()),
+            "any_failed": any(status == TranscriptionStatus.FAILED for status in self.file_statuses.values())
+        }
+    
+    def cleanup_all_chunks(self, force: bool = False) -> Dict[str, Any]:
+        """
+        Clean up all chunks directories.
+        
+        Args:
+            force: If True, clean up even if not all files completed successfully
+        
+        Returns:
+            Dictionary with cleanup results
+        """
+        summary = self.get_processing_summary()
+        cleanup_results = {
+            "attempted": [],
+            "successful": [],
+            "failed": [],
+            "skipped_reason": None
+        }
+        
+        # Check if we should proceed with cleanup
+        if not force and not summary["all_completed"]:
+            failed_files = [f for f, s in self.file_statuses.items() if s == TranscriptionStatus.FAILED]
+            pending_files = [f for f, s in self.file_statuses.items() if s != TranscriptionStatus.COMPLETED and s != TranscriptionStatus.FAILED]
+            
+            cleanup_results["skipped_reason"] = {
+                "message": "Not all files completed successfully",
+                "failed_files": failed_files,
+                "pending_files": pending_files
+            }
+            self.logger.warning("Skipping cleanup: Not all files completed successfully. Use force=True to cleanup anyway.")
+            return cleanup_results
+        
+        # Proceed with cleanup
+        for chunks_dir in self.chunks_directories.copy():
+            cleanup_results["attempted"].append(str(chunks_dir))
+            try:
+                if chunks_dir.exists():
+                    shutil.rmtree(chunks_dir)
+                    cleanup_results["successful"].append(str(chunks_dir))
+                    self.logger.info(f"Cleaned up chunks directory: {chunks_dir}")
+                else:
+                    cleanup_results["successful"].append(str(chunks_dir))
+                    self.logger.info(f"Chunks directory already removed: {chunks_dir}")
+                
+                # Remove from tracking
+                self.chunks_directories.discard(chunks_dir)
+                
+            except Exception as e:
+                cleanup_results["failed"].append({"directory": str(chunks_dir), "error": str(e)})
+                self.logger.warning(f"Failed to clean up chunks directory {chunks_dir}: {e}")
+        
+        self.logger.info(f"Cleanup completed. Successful: {len(cleanup_results['successful'])}, Failed: {len(cleanup_results['failed'])}")
+        return cleanup_results
