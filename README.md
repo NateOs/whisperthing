@@ -141,6 +141,9 @@ DB_PASSWORD=your_password
 CUDA_VISIBLE_DEVICES=0
 ```
 
-## License
-
-[Your License Here]
+<!-- TODO track transcribed files so you dont transcribe them again
+save transcriptions to db
+run as script on windows or linux
+let whisper transcribe to audio language
+clear chunks after transcription job completes
+ -->
