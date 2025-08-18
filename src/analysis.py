@@ -1,3 +1,4 @@
+import os
 import logging
 import re
 import time
@@ -8,11 +9,168 @@ from .models import TranscriptionResult, AnalysisResult, KeywordDetection, CallM
 class CallAnalyzer:
     """Analyzes transcribed calls for keywords and metrics."""
     
-    def __init__(self, config: AnalysisConfig):
-        self.config = config
+    def __init__(self, config: AnalysisConfig = None):
+        self.config = config or AnalysisConfig.from_env()
         self.logger = logging.getLogger(__name__)
-        self.keywords = [kw.lower() for kw in config.keywords]
+        # Load keywords from environment or config
+        self.keywords = self._load_keywords_from_env()
     
+    def _load_keywords_from_env(self) -> List[str]:
+        """Load keywords from environment variable or use config defaults."""
+        # First try to get from environment
+        custom_keywords = os.getenv("ANALYSIS_KEYWORDS", "")
+        if custom_keywords:
+            keywords = [k.strip().lower() for k in custom_keywords.split(",")]
+            self.logger.info(f"Loaded {len(keywords)} keywords from environment")
+            return keywords
+        
+        # Fall back to config keywords
+        if self.config and self.config.keywords:
+            keywords = [kw.lower() for kw in self.config.keywords]
+            self.logger.info(f"Using {len(keywords)} keywords from config")
+            return keywords
+        
+        # Default Spanish keywords for call analysis
+        default_keywords = [
+            "gracias", "muchas gracias", "por favor", "disculpe", "perdón",
+            "problema", "ayuda", "servicio", "cliente", "factura", "pago",
+            "cancelar", "activar", "desactivar", "consulta", "queja",
+            "buenos días", "buenas tardes", "buenas noches", "de nada",
+            "con permiso", "si me permite", "entiendo", "perfecto",
+            "lo siento", "mil disculpas", "que tenga buen día", "hasta luego"
+        ]
+        
+        self.logger.info(f"Using {len(default_keywords)} default keywords")
+        return default_keywords
+    
+    def scan_transcript_for_keywords(self, transcription: TranscriptionResult) -> List[Dict[str, any]]:
+        """
+        Scan through the transcript and find predefined keywords with their timestamps.
+        Returns a list of keyword detections with detailed information.
+        """
+        keyword_detections = []
+        
+        if not transcription.segments:
+            self.logger.warning("No segments found in transcription")
+            return keyword_detections
+        
+        self.logger.info(f"Scanning transcript for {len(self.keywords)} keywords across {len(transcription.segments)} segments")
+        
+        for segment in transcription.segments:
+            text_lower = segment.text.lower()
+            segment_start = segment.start
+            segment_end = segment.end
+            segment_duration = segment_end - segment_start
+            
+            for keyword in self.keywords:
+                # Find all occurrences of the keyword using word boundaries
+                pattern = r'\b' + re.escape(keyword) + r'\b'
+                matches = list(re.finditer(pattern, text_lower))
+                
+                for match in matches:
+                    # Calculate precise timestamp within the segment
+                    char_position = match.start()
+                    text_length = len(segment.text)
+                    
+                    # Estimate timestamp based on character position
+                    if text_length > 0:
+                        relative_time = (char_position / text_length) * segment_duration
+                    else:
+                        relative_time = 0
+                    
+                    timestamp = segment_start + relative_time
+                    
+                    # Extract context around the keyword
+                    context = self._extract_context(segment.text, match.start(), match.end())
+                    
+                    # Create detection record
+                    detection = {
+                        "keyword": keyword,
+                        "timestamp": round(timestamp, 2),
+                        "speaker": getattr(segment, 'speaker', 'unknown'),
+                        "context": context,
+                        "confidence": getattr(segment, 'confidence', 0.8),
+                        "segment_start": segment_start,
+                        "segment_end": segment_end,
+                        "segment_text": segment.text,
+                        "match_start_char": match.start(),
+                        "match_end_char": match.end()
+                    }
+                    
+                    keyword_detections.append(detection)
+                    
+                    self.logger.debug(f"Keyword '{keyword}' found at {timestamp:.2f}s by {detection['speaker']}: '{context}'")
+        
+        # Sort detections by timestamp
+        keyword_detections.sort(key=lambda x: x["timestamp"])
+        
+        self.logger.info(f"Found {len(keyword_detections)} total keyword occurrences")
+        
+        # Log summary by keyword
+        keyword_counts = {}
+        for detection in keyword_detections:
+            keyword = detection["keyword"]
+            keyword_counts[keyword] = keyword_counts.get(keyword, 0) + 1
+        
+        for keyword, count in sorted(keyword_counts.items()):
+            self.logger.info(f"  '{keyword}': {count} occurrences")
+        
+        return keyword_detections
+    
+    def get_keywords_by_speaker(self, keyword_detections: List[Dict[str, any]]) -> Dict[str, List[Dict[str, any]]]:
+        """Group keyword detections by speaker."""
+        by_speaker = {}
+        
+        for detection in keyword_detections:
+            speaker = detection["speaker"]
+            if speaker not in by_speaker:
+                by_speaker[speaker] = []
+            by_speaker[speaker].append(detection)
+        
+        return by_speaker
+    
+    def get_keywords_by_timeframe(self, keyword_detections: List[Dict[str, any]], 
+                                 timeframe_seconds: float = 60.0) -> List[Dict[str, any]]:
+        """Group keyword detections by time frames."""
+        timeframes = []
+        
+        if not keyword_detections:
+            return timeframes
+        
+        current_frame_start = 0
+        current_frame_keywords = []
+        
+        for detection in keyword_detections:
+            timestamp = detection["timestamp"]
+            
+            # Check if we need to start a new timeframe
+            if timestamp >= current_frame_start + timeframe_seconds:
+                # Save current frame if it has keywords
+                if current_frame_keywords:
+                    timeframes.append({
+                        "start_time": current_frame_start,
+                        "end_time": current_frame_start + timeframe_seconds,
+                        "keywords": current_frame_keywords.copy(),
+                        "keyword_count": len(current_frame_keywords)
+                    })
+                
+                # Start new frame
+                current_frame_start = int(timestamp // timeframe_seconds) * timeframe_seconds
+                current_frame_keywords = []
+            
+            current_frame_keywords.append(detection)
+        
+        # Add the last frame
+        if current_frame_keywords:
+            timeframes.append({
+                "start_time": current_frame_start,
+                "end_time": current_frame_start + timeframe_seconds,
+                "keywords": current_frame_keywords,
+                "keyword_count": len(current_frame_keywords)
+            })
+        
+        return timeframes
+
     def analyze_call(self, transcription: TranscriptionResult) -> AnalysisResult:
         """Perform complete analysis of a transcribed call."""
         start_time = time.time()
@@ -20,8 +178,20 @@ class CallAnalyzer:
         try:
             self.logger.info("Starting call analysis")
             
-            # Detect keywords
-            keyword_detections = self._detect_keywords(transcription)
+            # Detect keywords using the enhanced scanner
+            keyword_detections_raw = self.scan_transcript_for_keywords(transcription)
+            
+            # Convert to KeywordDetection objects for compatibility
+            keyword_detections = []
+            for detection in keyword_detections_raw:
+                kd = KeywordDetection(
+                    keyword=detection["keyword"],
+                    timestamp=detection["timestamp"],
+                    speaker=detection["speaker"],
+                    context=detection["context"],
+                    confidence=detection["confidence"]
+                )
+                keyword_detections.append(kd)
             
             # Calculate metrics
             metrics = self._calculate_metrics(transcription, keyword_detections)
