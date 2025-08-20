@@ -15,10 +15,11 @@ class TranscriptionSegment:
 class TranscriptionResult:
     """Complete transcription result for a call."""
     segments: List[TranscriptionSegment]
+    text: str  # Full text of the transcription
     duration: float  # Total duration in seconds
     file_size: int   # File size in bytes
     language: str
-    processing_time: float
+    processing_time: float = 0.0  # Time taken to process the transcription
 
 @dataclass
 class KeywordDetection:
