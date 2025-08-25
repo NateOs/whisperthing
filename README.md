@@ -139,6 +139,9 @@ DB_PASSWORD=your_password
 
 # Optional: GPU settings
 CUDA_VISIBLE_DEVICES=0
+
+<!-- for nvidia graphics -->
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 ```
 
 <!-- TODO track transcribed files so you dont transcribe them again
