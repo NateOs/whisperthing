@@ -11,6 +11,9 @@ import sys
 import shutil
 from enum import Enum
 
+from src.models import TranscriptionResult, TranscriptionSegment
+from .analysis import CallAnalyzer
+
 # Suppress deprecation warnings from audio libraries
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")
@@ -59,6 +62,8 @@ class TranscriptionStatus(Enum):
     MERGING = "merging"
     COMPLETED = "completed"
     FAILED = "failed"
+    ANALYZING = "analyzing"
+
 
 class SimpleTranscriber:
     """Enhanced transcription service with file splitting and better speaker detection."""
@@ -96,6 +101,9 @@ class SimpleTranscriber:
             self.logger.info("Audio processing (pydub) is available")
         else:
             self.logger.warning("Audio processing (pydub) is not available - large files cannot be split")
+        
+        print("Loading CallAnalyzer...")   
+        self.analyzer = CallAnalyzer()
     
     def _setup_diarization(self):
         """Set up speaker diarization pipeline."""
@@ -472,24 +480,78 @@ class SimpleTranscriber:
             merged_result = self._merge_transcription_and_speakers(merged_transcript, speaker_segments)
             
             # Mark as completed
-            self._update_file_status(file_path_str, TranscriptionStatus.COMPLETED)
+            self._update_file_status(file_path_str, TranscriptionStatus.ANALYZING)
+            keyword_detections = []
+            analysis_result = None
             
+            try:
+                # convert merged_result to a format suitable for analysis
+                transcription_segments = []
+                for segment in merged_result:
+                    transcription_segments.append(TranscriptionSegment(
+                        start=segment["start"],
+                        end=segment["end"],
+                        text=segment["text"],
+                        speaker=segment["role"],  # Use role (agent/customer) instead of speaker ID
+                        confidence=getattr(segment, 'confidence', 0.8)
+                    ))
+                    
+                # Create TranscriptionResult object
+                audio_file_size = audio_path.stat().st_size
+                total_duration = merged_result[-1]["end"] if merged_result else 0.0
+                
+                transcription_result = TranscriptionResult(
+                    text=merged_transcript.get("text", ""), 
+                    segments=transcription_segments,
+                    language=merged_transcript.get("language", "es"),
+                    duration=total_duration,
+                    file_size=audio_file_size
+                )
+                
+                # Run keyword analysis
+                analysis_result = self.analyzer.analyze_call(transcription_result)
+                print(f"Keyword analysis completed: {len(analysis_result.keyword_detections)} keywords detected")
+                keyword_detections = analysis_result.keyword_detections
+                print(f"Keyword analysis completed: {len(keyword_detections)} keywords detected")
+                
+                self.logger.info(f"Keyword analysis completed: {len(keyword_detections)} keywords detected")
+                
+            except Exception as e:
+                self.logger.warning(f"Keyword analysis failed: {e}")
+
+            self._update_file_status(file_path_str, TranscriptionStatus.COMPLETED)
+
             result = {
                 "file_path": str(audio_path),
                 "speaker_segments": speaker_segments,
                 "transcript": merged_transcript,
                 "merged_result": merged_result,
+                "keyword_detections": [
+                    {
+                        "keyword": kd.keyword,
+                        "timestamp": kd.timestamp,
+                        "speaker": kd.speaker,
+                        "context": kd.context,
+                        "confidence": kd.confidence
+                    } for kd in keyword_detections
+                ],
+                "analysis_summary": {
+                    "total_keywords_found": len(keyword_detections),
+                    "keywords_by_speaker": self._group_keywords_by_speaker(keyword_detections),
+                    "analysis_time": analysis_result.analysis_time if analysis_result else 0
+                } if keyword_detections else None,
                 "status": TranscriptionStatus.COMPLETED.value,
                 "chunks_used": len(chunks) > 1
             }
-            
-            return result
-            
         except Exception as e:
-            error_msg = str(e)
-            self._update_file_status(file_path_str, TranscriptionStatus.FAILED, error_msg)
-            self.logger.error(f"Failed to process {audio_path}: {error_msg}")
-            raise
+            self.logger.error(f"Error processing audio file {audio_file_path}: {e}")
+            self._update_file_status(file_path_str, TranscriptionStatus.FAILED, error=str(e))
+            result = {
+                "file_path": str(audio_path),
+                "error": str(e),
+                "status": TranscriptionStatus.FAILED.value
+            }
+        return result
     
     def _merge_transcriptions(self, transcriptions: List[dict], chunk_paths: List[Path]) -> dict:
         """Merge transcriptions from multiple chunks."""
@@ -616,6 +678,13 @@ class SimpleTranscriber:
             "all_completed": all(status == TranscriptionStatus.COMPLETED for status in self.file_statuses.values()),
             "any_failed": any(status == TranscriptionStatus.FAILED for status in self.file_statuses.values())
         }
+    def _group_keywords_by_speaker(self, keyword_detections: List) -> Dict[str, int]:
+        """Group keyword detections by speaker."""
+        speaker_counts = {}
+        for detection in keyword_detections:
+            speaker = detection.speaker
+            speaker_counts[speaker] = speaker_counts.get(speaker, 0) + 1
+        return speaker_counts
     
     def cleanup_all_chunks(self, force: bool = False) -> Dict[str, Any]:
         """
