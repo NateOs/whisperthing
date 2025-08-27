@@ -144,9 +144,11 @@ CUDA_VISIBLE_DEVICES=0
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 ```
 
-<!-- TODO track transcribed files so you dont transcribe them again
+<!-- TODO 
+track transcribed files so you dont transcribe them again
 save transcriptions to db
 run as script on windows or linux
-let whisper transcribe to audio language
+let whisper transcribe to audio language, based on language of audio
 clear chunks after transcription job completes
+confirm that the diariation is correct...
  -->
