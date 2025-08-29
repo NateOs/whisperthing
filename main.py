@@ -61,6 +61,10 @@ def main():
         input_dir = Path(os.getenv("INPUT_DIRECTORY", "./input"))
         output_dir = Path(os.getenv("OUTPUT_DIRECTORY", "./output"))
         
+        # Get database saving preference from environment
+        save_to_db = os.getenv("SAVE_TO_DATABASE", "true").lower() == "true"
+        logger.info(f"Database saving: {'enabled' if save_to_db else 'disabled'}")
+        
         # Create directories if they don't exist
         input_dir.mkdir(exist_ok=True)
         output_dir.mkdir(exist_ok=True)
@@ -81,13 +85,19 @@ def main():
         # Process each file
         successful_files = 0
         failed_files = 0
+        saved_to_db_count = 0
         
         for audio_file in audio_files:
             try:
                 logger.info(f"Starting processing: {audio_file.name}")
                 
-                # Process the audio
-                result = transcriber.process_audio(str(audio_file))
+                # Process the audio with database saving option
+                result = transcriber.process_audio(str(audio_file), save_to_db=save_to_db)
+                
+                # Track database saves
+                if result.get("saved_to_database", False):
+                    saved_to_db_count += 1
+                    logger.info(f"  Saved to database with call ID: {result.get('call_id')}")
                 
                 # Print conversation to console if available
                 if hasattr(transcriber, 'print_conversation'):
@@ -116,6 +126,8 @@ def main():
         logger.info("=" * 60)
         logger.info(f"Successfully processed: {successful_files} files")
         logger.info(f"Failed: {failed_files} files")
+        if save_to_db:
+            logger.info(f"Saved to database: {saved_to_db_count} files")
         
         # Get detailed processing summary
         summary = print_processing_summary(transcriber, logger)
