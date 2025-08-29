@@ -15,7 +15,7 @@ class DatabaseConfig:
     database: str
     username: str
     password: str
-    driver: str = "ODBC Driver 17 for SQL Server"
+    driver: str = ""
     trusted_connection: bool = False
 
     @classmethod

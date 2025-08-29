@@ -1,37 +1,44 @@
-import logging
 import pyodbc
-from datetime import datetime
-from typing import Dict, Any, Optional
-from dataclasses import asdict
+import logging
+import os
+from typing import Optional, Dict, Any, List
 from .config import DatabaseConfig
 from .models import CallRecord, TranscriptionResult, AnalysisResult
 
 class DatabaseManager:
-    """Manages database connections and operations for call analysis data."""
+    """Manages database connections and operations for call analysis."""
     
     def __init__(self, config: DatabaseConfig):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        self.connection_string = self._build_connection_string()
-        self._initialize_database()
-    
-    def _build_connection_string(self) -> str:
-        """Build SQL Server connection string."""
-        if self.config.trusted_connection:
-            return (
-                f"DRIVER={{{self.config.driver}}};"
-                f"SERVER={self.config.server};"
-                f"DATABASE={self.config.database};"
-                f"Trusted_Connection=yes;"
-            )
+        
+        # Check if we have a custom connection string from environment
+        custom_connection_string = os.getenv("SQL_CONNECTION_STRING")
+        if custom_connection_string:
+            self.connection_string = custom_connection_string
         else:
-            return (
-                f"DRIVER={{{self.config.driver}}};"
-                f"SERVER={self.config.server};"
-                f"DATABASE={self.config.database};"
-                f"UID={self.config.username};"
-                f"PWD={self.config.password};"
-            )
+            # Build connection string with SSL bypass for localhost
+            if config.trusted_connection:
+                self.connection_string = (
+                    f"DRIVER={{{config.driver}}};"
+                    f"SERVER={config.server};"
+                    f"DATABASE={config.database};"
+                    f"Trusted_Connection=yes;"
+                    f"TrustServerCertificate=yes;"
+                    f"Encrypt=optional;"
+                )
+            else:
+                self.connection_string = (
+                    f"DRIVER={{{config.driver}}};"
+                    f"SERVER={config.server};"
+                    f"DATABASE={config.database};"
+                    f"UID={config.username};"
+                    f"PWD={config.password};"
+                    f"TrustServerCertificate=yes;"
+                    f"Encrypt=optional;"
+                )
+        
+        self.logger.info(f"Database connection string configured for {config.server}/{config.database}")
     
     def _get_connection(self):
         """Get database connection."""
@@ -41,84 +48,54 @@ class DatabaseManager:
             self.logger.error(f"Database connection failed: {str(e)}")
             raise
     
-    def _initialize_database(self):
-        """Initialize database tables if they don't exist."""
-        create_tables_sql = """
-        IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='calls' AND xtype='U')
-        BEGIN
-            CREATE TABLE calls (
-                id INT IDENTITY(1,1) PRIMARY KEY,
-                audio_file_path NVARCHAR(500) NOT NULL,
-                processed_date DATETIME2 DEFAULT GETDATE(),
-                duration_seconds FLOAT,
-                file_size_bytes BIGINT,
-                status NVARCHAR(50) DEFAULT 'completed',
-                INDEX IX_calls_processed_date (processed_date),
-                INDEX IX_calls_status (status)
-            );
-        END
-        
-        IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='transcriptions' AND xtype='U')
-        BEGIN
-            CREATE TABLE transcriptions (
-                id INT IDENTITY(1,1) PRIMARY KEY,
-                call_id INT NOT NULL,
-                speaker_type NVARCHAR(20) NOT NULL, -- 'agent' or 'customer'
-                text NVARCHAR(MAX) NOT NULL,
-                start_time FLOAT NOT NULL,
-                end_time FLOAT NOT NULL,
-                confidence FLOAT,
-                FOREIGN KEY (call_id) REFERENCES calls(id) ON DELETE CASCADE,
-                INDEX IX_transcriptions_call_id (call_id),
-                INDEX IX_transcriptions_speaker (speaker_type),
-                INDEX IX_transcriptions_time (start_time, end_time)
-            );
-        END
-        
-        IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='keyword_detections' AND xtype='U')
-        BEGIN
-            CREATE TABLE keyword_detections (
-                id INT IDENTITY(1,1) PRIMARY KEY,
-                call_id INT NOT NULL,
-                keyword NVARCHAR(100) NOT NULL,
-                speaker_type NVARCHAR(20) NOT NULL,
-                timestamp_seconds FLOAT NOT NULL,
-                context_text NVARCHAR(500),
-                confidence FLOAT,
-                FOREIGN KEY (call_id) REFERENCES calls(id) ON DELETE CASCADE,
-                INDEX IX_keyword_detections_call_id (call_id),
-                INDEX IX_keyword_detections_keyword (keyword),
-                INDEX IX_keyword_detections_speaker (speaker_type),
-                INDEX IX_keyword_detections_timestamp (timestamp_seconds)
-            );
-        END
-        
-        IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='call_metrics' AND xtype='U')
-        BEGIN
-            CREATE TABLE call_metrics (
-                id INT IDENTITY(1,1) PRIMARY KEY,
-                call_id INT NOT NULL,
-                total_agent_talk_time FLOAT,
-                total_customer_talk_time FLOAT,
-                agent_word_count INT,
-                customer_word_count INT,
-                total_keywords_found INT,
-                politeness_score FLOAT,
-                FOREIGN KEY (call_id) REFERENCES calls(id) ON DELETE CASCADE,
-                INDEX IX_call_metrics_call_id (call_id)
-            );
-        END
-        """
-        
+    def test_connection(self) -> bool:
+        """Test database connection and return True if successful."""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(create_tables_sql)
-                conn.commit()
-                self.logger.info("Database tables initialized successfully")
+                cursor.execute("SELECT 1")
+                result = cursor.fetchone()
+                if result and result[0] == 1:
+                    self.logger.info("Database connection test successful")
+                    return True
+                else:
+                    self.logger.error("Database connection test failed - unexpected result")
+                    return False
         except Exception as e:
-            self.logger.error(f"Error initializing database: {str(e)}")
-            raise
+            self.logger.error(f"Database connection test failed: {str(e)}")
+            return False
+    
+    def get_database_info(self) -> Optional[Dict[str, Any]]:
+        """Get basic database information."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Get database name
+                cursor.execute("SELECT DB_NAME()")
+                db_name = cursor.fetchone()[0]
+                
+                # Get table count
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM INFORMATION_SCHEMA.TABLES 
+                    WHERE TABLE_TYPE = 'BASE TABLE'
+                """)
+                table_count = cursor.fetchone()[0]
+                
+                # Get SQL Server version
+                cursor.execute("SELECT @@VERSION")
+                version = cursor.fetchone()[0]
+                
+                return {
+                    "database_name": db_name,
+                    "table_count": table_count,
+                    "version": version
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Error getting database info: {str(e)}")
+            return None
     
     def save_call_analysis(self, audio_file_path: str, transcription: TranscriptionResult, 
                           analysis: AnalysisResult) -> int:
@@ -167,24 +144,4 @@ class DatabaseManager:
                 
         except Exception as e:
             self.logger.error(f"Error saving call analysis: {str(e)}")
-            raise
-    
-    def get_call_by_id(self, call_id: int) -> Optional[Dict[str, Any]]:
-        """Retrieve call data by ID."""
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT c.*, cm.* FROM calls c
-                    LEFT JOIN call_metrics cm ON c.id = cm.call_id
-                    WHERE c.id = ?
-                """, (call_id,))
-                
-                result = cursor.fetchone()
-                if result:
-                    return dict(zip([column[0] for column in cursor.description], result))
-                return None
-                
-        except Exception as e:
-            self.logger.error(f"Error retrieving call {call_id}: {str(e)}")
             raise
