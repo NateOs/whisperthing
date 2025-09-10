@@ -33,7 +33,7 @@ class DatabaseConfig:
 @dataclass
 class WhisperConfig:
     model_size: str = "base"
-    language: str = "es"
+    language: str = ""
     device: str = "cpu"
     compute_type: str = "int8"
 
@@ -42,7 +42,7 @@ class WhisperConfig:
         """Create WhisperConfig from environment variables."""
         return cls(
             model_size=os.getenv("WHISPER_MODEL_SIZE", "base"),
-            language=os.getenv("WHISPER_LANGUAGE", "es"),
+            language=os.getenv("WHISPER_LANGUAGE"),
             device=os.getenv("WHISPER_DEVICE", "cpu"),
             compute_type=os.getenv("WHISPER_COMPUTE_TYPE", "int8")
         )
@@ -175,7 +175,7 @@ class ConfigManager:
             },
             "whisper": {
                 "model_size": "base",
-                "language": "es",
+                "language": "",
                 "device": "cpu",
                 "compute_type": "int8"
             },

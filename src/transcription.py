@@ -77,8 +77,7 @@ class SimpleTranscriptionService:
                     response = self.client.audio.transcriptions.create(
                         model="whisper-1",
                         file=audio,
-                        language="es",  # Specify Spanish
-                        prompt="Esta es una llamada de servicio al cliente en español. Los participantes discuten sobre pedidos, direcciones y códigos postales.",  # Context prompt
+                        prompt="This is a conversation between a customer and an agent. Transcribe according to the audio language",
                         temperature=0.0,  # More deterministic
                         response_format="verbose_json"
                     )
@@ -207,5 +206,5 @@ class SimpleTranscriptionService:
             'text': response.text,
             'segments': segments,
             'duration': getattr(response, 'duration', 0),
-            'language': 'es'
+            'language': ''
         }
