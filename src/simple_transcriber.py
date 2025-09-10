@@ -13,6 +13,8 @@ from enum import Enum
 
 from src.models import TranscriptionResult, TranscriptionSegment
 from .analysis import CallAnalyzer
+from .config import DatabaseConfig
+from .database import DatabaseManager
 
 # Suppress deprecation warnings from audio libraries
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
@@ -96,6 +98,10 @@ class SimpleTranscriber:
         # Load keywords for analysis
         self.keywords = self._load_keywords()
         
+        # Initialize database manager
+        self.db_manager = None
+        self._setup_database()
+        
         self.logger.info("Simple transcriber initialized successfully")
         if AUDIO_PROCESSING_AVAILABLE:
             self.logger.info("Audio processing (pydub) is available")
@@ -105,6 +111,22 @@ class SimpleTranscriber:
         print("Loading CallAnalyzer...")   
         self.analyzer = CallAnalyzer()
     
+    def _setup_database(self):
+        """Set up database connection."""
+        try:
+            db_config = DatabaseConfig.from_env()
+            self.db_manager = DatabaseManager(db_config)
+            
+            # Test connection
+            if self.db_manager.test_connection():
+                self.logger.info("Database connection established successfully")
+            else:
+                self.logger.warning("Database connection test failed - results will not be saved to database")
+                self.db_manager = None
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize database: {e} - results will not be saved to database")
+            self.db_manager = None
+
     def _setup_diarization(self):
         """Set up speaker diarization pipeline."""
         hf_token = os.getenv("HUGGINGFACE_TOKEN")
@@ -436,7 +458,7 @@ class SimpleTranscriber:
         
         return assigned_segments
     
-    def process_audio(self, audio_file_path: str, num_speakers: int = 2) -> Dict[str, Any]:
+    def process_audio(self, audio_file_path: str, num_speakers: int = 2, save_to_db: bool = True) -> Dict[str, Any]:
         """Process audio file with diarization and transcription."""
         audio_path = Path(audio_file_path)
         if not audio_path.exists():
@@ -479,7 +501,7 @@ class SimpleTranscriber:
             # Step 5: Merge based on timestamps
             merged_result = self._merge_transcription_and_speakers(merged_transcript, speaker_segments)
             
-            # Mark as completed
+            # Step 6: Analyze keywords
             self._update_file_status(file_path_str, TranscriptionStatus.ANALYZING)
             keyword_detections = []
             analysis_result = None
@@ -510,19 +532,31 @@ class SimpleTranscriber:
                 
                 # Run keyword analysis
                 analysis_result = self.analyzer.analyze_call(transcription_result)
-                print(f"Keyword analysis completed: {len(analysis_result.keyword_detections)} keywords detected")
                 keyword_detections = analysis_result.keyword_detections
-                print(f"Keyword analysis completed: {len(keyword_detections)} keywords detected")
                 
                 self.logger.info(f"Keyword analysis completed: {len(keyword_detections)} keywords detected")
                 
             except Exception as e:
                 self.logger.warning(f"Keyword analysis failed: {e}")
 
+            # Step 7: Save to database if enabled and available
+            call_id = None
+            if save_to_db and self.db_manager and analysis_result:
+                try:
+                    call_id = self.db_manager.save_call_analysis(
+                        audio_file_path=str(audio_path),
+                        transcription=transcription_result,
+                        analysis=analysis_result
+                    )
+                    self.logger.info(f"Results saved to database with call ID: {call_id}")
+                except Exception as e:
+                    self.logger.error(f"Failed to save results to database: {e}")
+
             self._update_file_status(file_path_str, TranscriptionStatus.COMPLETED)
 
             result = {
                 "file_path": str(audio_path),
+                "call_id": call_id,  # Include database ID if saved
                 "speaker_segments": speaker_segments,
                 "transcript": merged_transcript,
                 "merged_result": merged_result,
@@ -541,7 +575,8 @@ class SimpleTranscriber:
                     "analysis_time": analysis_result.analysis_time if analysis_result else 0
                 } if keyword_detections else None,
                 "status": TranscriptionStatus.COMPLETED.value,
-                "chunks_used": len(chunks) > 1
+                "chunks_used": len(chunks) > 1,
+                "saved_to_database": call_id is not None
             }
         except Exception as e:
             self.logger.error(f"Error processing audio file {audio_file_path}: {e}")
@@ -549,7 +584,8 @@ class SimpleTranscriber:
             result = {
                 "file_path": str(audio_path),
                 "error": str(e),
-                "status": TranscriptionStatus.FAILED.value
+                "status": TranscriptionStatus.FAILED.value,
+                "saved_to_database": False
             }
         return result
     
