@@ -258,14 +258,14 @@ class SimpleTranscriber:
                 transcript = self.client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
-                    language="es",
+                    language="",
                     response_format="verbose_json",
                     timestamp_granularities=["segment"]
                 )
             
             return {
                 "text": transcript.text,
-                "language": getattr(transcript, 'language', 'es'),
+                "language": getattr(transcript, 'language', ''),
                 "segments": [
                     {
                         "start": seg.start,
@@ -525,7 +525,7 @@ class SimpleTranscriber:
                 transcription_result = TranscriptionResult(
                     text=merged_transcript.get("text", ""), 
                     segments=transcription_segments,
-                    language=merged_transcript.get("language", "es"),
+                    language=merged_transcript.get("language", ""),
                     duration=total_duration,
                     file_size=audio_file_size
                 )
@@ -619,7 +619,7 @@ class SimpleTranscriber:
             "text": full_text,
             "segments": merged_segments,
             "chunks_processed": len(transcriptions),
-            "language": transcriptions[0].get("language", "es") if transcriptions else "es"
+            "language": transcriptions[0].get("language", "") if transcriptions else "es"
         }
     
     def _merge_transcription_and_speakers(self, transcript: Dict[str, Any], 
