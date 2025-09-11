@@ -1,3 +1,4 @@
+import json
 import time
 import argparse
 import logging
@@ -5,6 +6,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Set
+
+from dotenv import load_dotenv
 from src.simple_transcriber import SimpleTranscriber
 from src.utils import setup_logging
 
@@ -128,6 +131,24 @@ class FileMonitor:
             
             if result.get("status") == "completed":
                 self.logger.info(f"Successfully processed: {file_path.name}")
+                
+                # Save to output folder as JSON
+                try:
+                    output_dir = Path(os.getenv("OUTPUT_DIRECTORY", "./output"))
+                    output_dir.mkdir(exist_ok=True)
+                    
+                    output_file = output_dir / f"{file_path.stem}_analysis.json"
+                    
+                    # Remove internal status info before saving
+                    result_to_save = {k: v for k, v in result.items() if k not in ['status', 'chunks_used']}
+                    
+                    with open(output_file, 'w', encoding='utf-8') as f:
+                        json.dump(result_to_save, f, indent=2, ensure_ascii=False)
+                    
+                    self.logger.info(f"Analysis saved to: {output_file}")
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to save JSON output: {e}")
                 
                 # Print summary
                 keyword_count = len(result.get("keyword_detections", []))
