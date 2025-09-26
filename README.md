@@ -1,154 +1,239 @@
-# Call Transcription Analyzer
+# 🎙️ Call Transcription Analyzer
 
-A Python application that transcribes Spanish call recordings using OpenAI Whisper, performs speaker diarization, and analyzes calls for specific keywords with timestamps.
+A powerful Python application designed to transcribe and analyze Spanish call recordings, offering detailed insights through speaker identification, keyword detection, and comprehensive analytics. Built with OpenAI's Whisper and advanced audio processing capabilities.
 
-## Features
+## ✨ Features
 
-- **Audio Transcription**: Uses OpenAI Whisper for accurate Spanish transcription
-- **Speaker Separation**: Identifies agent vs customer using pyannote.audio
-- **Keyword Detection**: Finds specific keywords with precise timestamps
-- **Database Storage**: Saves results to MS SQL Server database
-- **Windows Executable**: Can be compiled to .exe for Windows Server deployment
-- **Task Scheduler Ready**: Designed to run via Windows Task Scheduler
+- 🎯 **Smart Transcription**: High-accuracy Spanish transcription using OpenAI Whisper
+- 👥 **Speaker Recognition**: Automatically distinguishes between agents and customers
+- 🔍 **Keyword Analytics**: Detects and timestamps important phrases and keywords
+- 📊 **Metrics & Insights**: Generates detailed call analytics and statistics
+- 💾 **Data Persistence**: Stores results in MS SQL Server for analysis
+- ⏰ **Automation Ready**: Built-in scheduling support via Windows Task Scheduler
+- 🔄 **Continuous Processing**: Monitors folders for new recordings
 
-## Requirements
+## 📋 Prerequisites
 
-- Python 3.8+
-- Windows Server (for .exe deployment)
-- MS SQL Server
-- Audio files in .wav format
+- 🐍 Python 3.8 or higher
+- 🖥️ Windows OS (for scheduled execution)
+- 🗄️ MS SQL Server (optional, for data storage)
+- 🎵 Audio files in WAV format
+- 🔑 OpenAI API key
+- 🎫 Hugging Face token (for speaker recognition)
 
-## Installation
+## 🚀 Quick Start
 
 1. Clone the repository:
    ```bash
-   git clone <repository-url>
-   cd call_transcription_analyzer
+   git clone https://github.com/nateos/whisperthing.git
+   cd whisperthing
    ```
+2. Create and activate a virtual environment:
 
-2. Create virtual environment:
    ```bash
    python -m venv venv
+
+   # On Windows
    venv\Scripts\activate
+
+   # On Linux/Mac
+   source venv/bin/activate
    ```
 
 3. Install dependencies:
+
    ```bash
+   # For NVIDIA GPU support (recommended)
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+   # Install other dependencies
    pip install -r requirements.txt
    ```
 
-4. Set up database:
-   - Run `database_setup.sql` in your SQL Server
-   - Update `config.json` with your database credentials
+4. Set up environment configuration:
 
-5. Configure Hugging Face token (for speaker diarization):
    ```bash
-   set HUGGINGFACE_TOKEN=your_token_here
+   # Copy example configuration
+   cp .env.example .env
+
+   # Edit .env with your credentials
+   # Required: OPENAI_API_KEY, HUGGINGFACE_TOKEN
+   # Optional: Database settings
    ```
 
-## Configuration
+5. Configure database (optional):
 
-Edit `config.json` to configure:
-- Database connection settings
-- Whisper model settings
-- Keywords to detect
-- Input/output directories
+   ```bash
+   # Ensure SQL Server is running
+   # Run the setup script in SQL Server Management Studio
+   database_setup.sql
 
-## Usage
+   # Test connection
+   python test_db_connection.py
+   ```
 
-### Command Line
+## 💻 Usage
 
-Process a single file:
+### Command Line Interface
+
+Process recordings in different ways:
+
 ```bash
+# Process a single file
 python main.py --audio-file "path/to/recording.wav"
+
+# Process all files in a directory
+python main.py --audio-folder "path/to/recordings"
+
+# Monitor a folder for new files
+python main.py --watch-folder "path/to/watch" --check-interval 60
+
+# Simple mode: just run and process files in input/
+python main.py
 ```
 
-Process all files in a folder:
+### 🔄 Automated Processing
+
+The included `run_analyzer.bat` script provides automated execution:
+
 ```bash
-python main.py --audio-folder "path/to/recordings/"
+# Run manually
+run_analyzer.bat
+
+# Or schedule with Windows Task Scheduler
 ```
 
-Use custom config:
-```bash
-python main.py --config "custom_config.json"
-```
+### ⏰ Setting Up Scheduled Execution
 
-### Building Executable
+1. Open Windows Task Scheduler
+2. Create a new Basic Task
+3. Configure the schedule (e.g., daily at specific time)
+4. Action: "Start a program"
+5. Program: Select `run_analyzer.bat`
+6. Start in: Set to project root (e.g., `C:\github\whisperthing`)
+7. Complete and save
 
-Run the build script:
-```bash
-build_exe.bat
-```
+## 📊 Data Storage
 
-The executable will be created in the `dist` folder.
+### Database Schema
 
-### Windows Task Scheduler
+The application uses four main tables:
 
-1. Create a new task in Task Scheduler
-2. Set the executable path to `dist/CallAnalyzer.exe`
-3. Add arguments as needed (e.g., `--audio-folder "C:\recordings"`)
-4. Configure schedule as required
+| Table                | Description                                       |
+| -------------------- | ------------------------------------------------- |
+| `calls`              | Main call records and metadata                    |
+| `transcriptions`     | Detailed transcription segments with speaker info |
+| `keyword_detections` | Detected keywords with timestamps                 |
+| `call_metrics`       | Analytics and statistics per call                 |
 
-## Database Schema
+### 📈 Analysis Output
 
-The application creates four main tables:
-- `calls`: Main call records
-- `transcriptions`: Transcribed segments with speaker info
-- `keyword_detections`: Detected keywords with timestamps
-- `call_metrics`: Calculated metrics per call
+For each processed recording, you get:
 
-## Output
+- 📝 Full transcription with speaker identification
+- 🎯 Keyword occurrences with exact timestamps
+- 📊 Call metrics (talk time, word counts, politeness)
+- 🔄 Processing metadata and status
 
-For each processed call, the system stores:
-- Complete transcription with speaker separation
-- Keyword detections with exact timestamps
-- Call metrics (talk time, word counts, politeness score)
-- Processing metadata
+### 🔍 Keyword Detection
 
-## Example Keywords
+Default Spanish keywords include:
 
-The default configuration includes Spanish politeness keywords:
+**Politeness:**
+
 - "gracias", "muchas gracias"
 - "por favor", "disculpe"
 - "buenos días", "buenas tardes"
-- And more...
 
-## Troubleshooting
+**Service:**
 
-1. **Whisper model download**: First run will download the model
-2. **Speaker diarization**: Requires Hugging Face token
-3. **Database connection**: Ensure SQL Server is accessible
-4. **Audio format**: Only .wav files are supported
+- "ayuda", "servicio"
+- "problema", "consulta"
+- "factura", "pago"
 
-## Environment Variables
+## 🛠️ Troubleshooting
 
-Copy `.env.example` to `.env` and configure:
+### Common Issues
 
-```env
-# File: /call_transcription_analyzer/.env.example
-# Copy this file to .env and fill in your actual values
+1. **First Run Delay**
 
-# Hugging Face token for speaker diarization
+   - Initial run downloads Whisper model
+   - May take several minutes depending on connection
+
+2. **Speaker Recognition**
+
+   - Requires valid Hugging Face token
+   - Check `.env` file configuration
+
+3. **Database Connectivity**
+
+   - Run `test_db_connection.py`
+   - Verify SQL Server credentials
+   - Ensure SQL Server is running
+
+4. **Audio Processing**
+   - Only WAV format supported
+   - Files over 25MB are split automatically
+   - Check available disk space
+
+## ⚙️ Configuration
+
+### Environment Variables
+
+Create `.env` file with these settings:
+
+```ini
+# API Keys (Required)
+OPENAI_API_KEY=your_openai_api_key_here
 HUGGINGFACE_TOKEN=your_huggingface_token_here
 
-# Database credentials (if not using config.json)
+# Database Settings (Optional)
+DB_DRIVER={ODBC Driver 17 for SQL Server}
 DB_SERVER=localhost
 DB_DATABASE=CallAnalysis
 DB_USERNAME=your_username
 DB_PASSWORD=your_password
+DB_TRUSTED_CONNECTION=no
 
-# Optional: GPU settings
-CUDA_VISIBLE_DEVICES=0
+# Processing Options
+WHISPER_MODEL_SIZE=base
+WHISPER_LANGUAGE=es
+SPEAKER_SEPARATION_ENABLED=true
+CONFIDENCE_THRESHOLD=0.7
 
-<!-- for nvidia graphics -->
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# Custom Keywords (Optional)
+ANALYSIS_KEYWORDS=gracias,por favor,disculpe,buenos días
+
+# Directories
+INPUT_DIRECTORY=./input
+OUTPUT_DIRECTORY=./output
+
+# Performance (Optional)
+CUDA_VISIBLE_DEVICES=0  # For GPU support
 ```
 
-<!-- TODO 
-track transcribed files so you dont transcribe them again
-save transcriptions to db
-run as script on windows or linux
-let whisper transcribe to audio language, based on language of audio
-clear chunks after transcription job completes
-confirm that the diariation is correct...
- -->
+## 📁 Project Structure
+
+```
+whisperthing/
+├── input/               # Place audio files here
+├── output/             # Results and analysis
+├── src/                # Source code
+│   ├── analysis.py     # Call analysis
+│   ├── audio_utils.py  # Audio processing
+│   ├── database.py     # Data storage
+│   └── models.py       # Data models
+├── .env                # Configuration
+└── main.py            # Entry point
+```
+
+## 📜 License
+
+This project is privately licensed. All rights reserved.
+
+## 🙏 Acknowledgments
+
+- OpenAI for Whisper
+- Pyannote.audio team
+- PyTorch community
+- Python SQL Server team
